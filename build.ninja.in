@@ -1,0 +1,18 @@
+inc = libs/inc
+cflags = -Wall -I$inc
+
+rule compile
+  command = gcc $cflags -c -o $out $in -MMD -MF $out.d
+  depfile = $out.d
+
+rule link
+  command = gcc -o $out $in
+
+# Compile libs 
+$(for f in libs/%.c; build libs/%.o: compile libs/%.c)
+
+# Compile tests
+$(for f in tests/%.c; build tests/%.o: compile tests/%.c)
+
+# Link
+$(for f in tests/test_%.c; build test_%: link tests/test_%.o libs/%.o)
