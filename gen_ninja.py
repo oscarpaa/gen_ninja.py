@@ -1,68 +1,78 @@
 import re
 import subprocess
 import sys
-import glob
-import os
+
+def is_ninja_for(cmd):
+    return (
+        cmd.startswith('for ')
+        and '%' in cmd
+        and ' do ' not in cmd
+        and 'done' not in cmd
+    )
+
+def ninja_for_to_bash(cmd):
+    m = re.findall(r'^for\s+(\w+)\s+in\s+([^\s;]+);(.+)$', cmd)
+    if not m:
+        return cmd
+
+    var, pattern, body = m[0]
+
+    pre, post = pattern.split('%', 1)
+    glob = pattern.replace('%', '*')
+
+    body = body.replace('%', '${cap}')
+    body = body.replace(f'${var}', f'${{{var}}}')
+
+    return (
+        f'shopt -s nullglob; '
+        f'for {var} in {glob}; do '
+        f'cap="${{{var}#{pre}}}"; '
+        f'cap="${{cap%{post}}}"; '
+        f'echo "{body.strip()}"; '
+        f'done'
+    )
 
 def expand_bash_commands(template_path):
-    with open(template_path, 'r') as f:
+    with open(template_path) as f:
         lines = f.readlines()
 
-    processed_lines = []
+    result = []
+
     for line in lines:
-        if line.strip().startswith('#'):
-            processed_lines.append(line)
+        stripped = line.lstrip()
+
+        # Skip commented lines
+        if stripped.startswith('#'):
+            result.append(line)
             continue
 
-        # Find occurrences of $(...) in the line
-        matches = re.findall(r'\$\((.*?)\)', line, re.DOTALL)
-        
-        new_line = line
-        for command in matches:
-            # Recognition of the new syntax: 'for f in ...; build ...'
-            if 'build' in command and '%' in command:
-                # Extract the pattern between 'in ' and ';'
-                pattern_match = re.search(r'in\s+([^\s;]+%[^\s;]*);', command)
-                
-                if pattern_match:
-                    full_pattern = pattern_match.group(1)
-                    prefix, suffix = full_pattern.split('%', 1)
-                    
-                    # Clean suffix for glob (e.g., .c)
-                    clean_suffix = re.split(r'[:\s;)]', suffix)[0]
-                    
-                    files = glob.glob(f"{prefix}*{clean_suffix}")
-                    expanded_list = []
-                    
-                    for f in files:
-                        captured = f.replace(prefix, "", 1).replace(clean_suffix, "", 1)
-                        bash_part = command.split(';', 1)[1].strip()
-                        current_cmd = bash_part.replace("%", captured).replace("$f", f)
-                        
-                        try:
-                            if current_cmd.startswith('build'):
-                                expanded_list.append(current_cmd)
-                            else:
-                                out = subprocess.check_output(current_cmd, shell=True, text=True).strip()
-                                if out: expanded_list.append(out)
-                        except subprocess.CalledProcessError:
-                            print(f"[!] Error executing: {current_cmd}")
-                            sys.exit(1)
-                    
-                    result = "\n".join(expanded_list)
-                    new_line = new_line.replace(f"$({command})", result)
-            else:
-                # Pure Bash if it doesn't match the new syntax
-                try:
-                    result = subprocess.check_output(command, shell=True, text=True).strip()
-                    new_line = new_line.replace(f"$({command})", result)
-                except subprocess.CalledProcessError:
-                    print(f"[!] Error: {command}")
-                    sys.exit(1)
-        
-        processed_lines.append(new_line)
+        # Find all $(...) expressions
+        matches = re.findall(r'\$\(([^()]*)\)', line)
 
-    return "".join(processed_lines)
+        for raw in matches:
+            cmd = raw.strip()
+
+            # Convert only non-bash Ninja for loops
+            if is_ninja_for(cmd):
+                bash_cmd = ninja_for_to_bash(cmd)
+            else:
+                bash_cmd = cmd
+
+            try:
+                out = subprocess.check_output(
+                    ['bash', '-c', bash_cmd],
+                    text=True
+                ).strip()
+            except subprocess.CalledProcessError:
+                print(f"[!] Error executing bash command:\n{bash_cmd}")
+                sys.exit(1)
+
+            line = line.replace(f'$({raw})', out)
+
+        result.append(line)
+
+    return ''.join(result)
+
 
 if __name__ == "__main__":
     script_name = sys.argv[0]
@@ -70,14 +80,13 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print(f"[!] Usage: python3 {script_name} <template> [output]")
         sys.exit(1)
-    
+
     input_template = sys.argv[1]
     output_ninja = sys.argv[2] if len(sys.argv) == 3 else "build.ninja"
 
     try:
         final_content = expand_bash_commands(input_template)
-        
-        # Header with Auto-regeneration rule
+
         header = [
             f"# AUTOMATICALLY GENERATED FROM {input_template}",
             f"# Generated by {script_name}\n",
@@ -85,13 +94,15 @@ if __name__ == "__main__":
             f"  command = python3 {script_name} {input_template} {output_ninja}",
             "  generator = 1\n",
             f"build {output_ninja}: regen_ninja {input_template} {script_name}\n",
-            "#" + "-"*40 + "\n"
+            "#" + "-" * 40 + "\n"
         ]
-        
+
         with open(output_ninja, "w") as f:
-            f.write("\n".join(header) + "\n" + final_content)
-        
+            f.write("\n".join(header))
+            f.write(final_content)
+
         print(f"[*] {output_ninja} successfully generated")
+
     except Exception as e:
         print(f"[!] Error: {e}")
-
+        sys.exit(1)
