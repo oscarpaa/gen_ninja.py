@@ -94,7 +94,7 @@ if __name__ == "__main__":
             f"  command = python3 {script_name} {input_template} {output_ninja}",
             "  generator = 1\n",
             f"build {output_ninja}: regen_ninja {input_template} {script_name}\n",
-            "#" + "-" * 40 + "\n"
+            "#" + "-" * 40 + "\n\n"
         ]
 
         with open(output_ninja, "w") as f:
